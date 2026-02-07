@@ -1,68 +1,94 @@
-import fs from "fs"
+import makeWASocket from "@whiskeysockets/baileys"
 import P from "pino"
-import makeWASocket, { useMultiFileAuthState } from "@whiskeysockets/baileys"
+import fs from "fs"
 
 const log = P({ level: "silent" })
 
-const DELAY = 90 * 1000
-const TIMEOUT = 20000
-const COOLDOWN = 90 * 60 * 1000
+// ===== CONFIG =====
+const DELAY = 2500 // 2.5 seconds between checks
+const OUTPUT = "results.json"
 
+// ===== LOAD NUMBERS =====
 const numbers = fs.readFileSync("numbers.txt", "utf-8")
   .split("\n")
   .map(n => n.trim())
   .filter(Boolean)
 
-let results = {}
-
-function classify(err) {
-  if (!err) return "ok"
-  const m = JSON.stringify(err).toLowerCase()
-  if (m.includes("try again") || m.includes("too many") || m.includes("429"))
-    return "1h_issue"
-  if (m.includes("banned") || m.includes("not allowed"))
-    return "banned"
-  return "unknown"
+// ===== HELPERS =====
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms))
 }
 
-async function checkNumber(num) {
-  console.log("🔍 Checking", num)
+// ===== MAIN =====
+async function run() {
+  const sock = makeWASocket({ logger: log })
 
-  const { state } = await useMultiFileAuthState("./auth_" + num.replace("+", ""))
+  let results = {}
 
-  const sock = makeWASocket({
-    auth: state,
-    logger: log,
-    mobile: true,
-    printQRInTerminal: false
-  })
-
-  return new Promise(resolve => {
-    sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
-      if (connection === "open") resolve("ok")
-      if (connection === "close")
-        resolve(classify(lastDisconnect?.error))
-    })
-    setTimeout(() => resolve("unknown"), TIMEOUT)
-  })
-}
-
-(async () => {
   for (const num of numbers) {
-    const status = await checkNumber(num)
-
-    results[num] = {
-      status,
-      checked_at: new Date().toISOString(),
-      cooldown_until: status === "1h_issue" ? Date.now() + COOLDOWN : 0
+    const jid = num.replace("+", "") + "@s.whatsapp.net"
+    let score = 0
+    let info = {
+      exists: false,
+      profile_pic: false,
+      name: false,
+      score: 0
     }
 
-    fs.writeFileSync("results.json", JSON.stringify(results, null, 2))
-    console.log(num, "→", status)
-    console.log("⏱ Waiting...\n")
+    console.log("🔍 Checking", num)
 
-    await new Promise(r => setTimeout(r, DELAY))
+    try {
+      // 1️⃣ Exists on WhatsApp
+      const wa = await sock.onWhatsApp(jid)
+      if (!wa || !wa[0]?.exists) {
+        console.log(num, "→ ❌ NOT ON WHATSAPP\n")
+        continue
+      }
+
+      score += 30
+      info.exists = true
+
+      // 2️⃣ Profile picture (strong signal of old account)
+      try {
+        await sock.profilePictureUrl(jid)
+        score += 40
+        info.profile_pic = true
+      } catch {}
+
+      // 3️⃣ WhatsApp name
+      try {
+        const contact = sock.contacts[jid]
+        if (contact?.notify || contact?.name) {
+          score += 20
+          info.name = true
+        }
+      } catch {}
+
+      // 4️⃣ Stability bonus
+      score += 10
+
+    } catch (e) {
+      console.log(num, "→ ⚠️ ERROR\n")
+      continue
+    }
+
+    info.score = score
+    results[num] = info
+
+    // OUTPUT RESULT
+    let tag =
+      score >= 80 ? "🟢 OLD / STABLE" :
+      score >= 60 ? "🟡 NORMAL" :
+      "🔴 FRESH / RISKY"
+
+    console.log(`${num} → SCORE: ${score} ${tag}\n`)
+
+    fs.writeFileSync(OUTPUT, JSON.stringify(results, null, 2))
+    await sleep(DELAY)
   }
 
-  console.log("✅ Done. Results saved in results.json")
-})()
+  console.log("✅ DONE. Results saved in", OUTPUT)
+  process.exit()
+}
+
+run()})()
