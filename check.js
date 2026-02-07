@@ -1,94 +1,92 @@
 import makeWASocket from "@whiskeysockets/baileys"
 import P from "pino"
+import readline from "readline"
 import fs from "fs"
 
 const log = P({ level: "silent" })
-
-// ===== CONFIG =====
-const DELAY = 2500 // 2.5 seconds between checks
+const DELAY = 2500 // 2.5 sec between checks
 const OUTPUT = "results.json"
 
-// ===== LOAD NUMBERS =====
-const numbers = fs.readFileSync("numbers.txt", "utf-8")
-  .split("\n")
-  .map(n => n.trim())
-  .filter(Boolean)
+// Read pasted input
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout
+})
 
-// ===== HELPERS =====
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms))
-}
+console.log("📥 Paste numbers (space or newline separated)")
+console.log("👉 Press ENTER twice when done\n")
 
-// ===== MAIN =====
-async function run() {
+let input = ""
+
+rl.on("line", (line) => {
+  if (line.trim() === "") {
+    rl.close()
+  } else {
+    input += " " + line
+  }
+})
+
+rl.on("close", async () => {
+  const numbers = [...new Set(
+    input
+      .match(/\d{7,}/g)
+      ?.map(n => "+" + n) || []
+  )]
+
+  if (!numbers.length) {
+    console.log("❌ No valid numbers detected")
+    process.exit()
+  }
+
+  console.log(`\n🔢 ${numbers.length} numbers received\n`)
+
   const sock = makeWASocket({ logger: log })
-
   let results = {}
 
   for (const num of numbers) {
     const jid = num.replace("+", "") + "@s.whatsapp.net"
     let score = 0
-    let info = {
-      exists: false,
-      profile_pic: false,
-      name: false,
-      score: 0
-    }
 
     console.log("🔍 Checking", num)
 
     try {
-      // 1️⃣ Exists on WhatsApp
+      // Exists on WhatsApp
       const wa = await sock.onWhatsApp(jid)
       if (!wa || !wa[0]?.exists) {
         console.log(num, "→ ❌ NOT ON WHATSAPP\n")
+        results[num] = { exists: false, score: 0 }
         continue
       }
 
-      score += 30
-      info.exists = true
+      score += 40
 
-      // 2️⃣ Profile picture (strong signal of old account)
+      // Profile picture = strong OLD signal
       try {
         await sock.profilePictureUrl(jid)
         score += 40
-        info.profile_pic = true
       } catch {}
 
-      // 3️⃣ WhatsApp name
-      try {
-        const contact = sock.contacts[jid]
-        if (contact?.notify || contact?.name) {
-          score += 20
-          info.name = true
-        }
-      } catch {}
+      // Stability bonus
+      score += 20
 
-      // 4️⃣ Stability bonus
-      score += 10
+      const tag =
+        score >= 80 ? "🟢 OLD / STABLE" :
+        score >= 60 ? "🟡 NORMAL" :
+        "🔴 FRESH"
 
-    } catch (e) {
-      console.log(num, "→ ⚠️ ERROR\n")
-      continue
+      console.log(`${num} → SCORE ${score} ${tag}\n`)
+      results[num] = { exists: true, score }
+
+    } catch {
+      console.log(num, "→ ⚠️ LOOKUP ERROR\n")
+      results[num] = { exists: "error", score: 0 }
     }
 
-    info.score = score
-    results[num] = info
-
-    // OUTPUT RESULT
-    let tag =
-      score >= 80 ? "🟢 OLD / STABLE" :
-      score >= 60 ? "🟡 NORMAL" :
-      "🔴 FRESH / RISKY"
-
-    console.log(`${num} → SCORE: ${score} ${tag}\n`)
-
     fs.writeFileSync(OUTPUT, JSON.stringify(results, null, 2))
-    await sleep(DELAY)
+    await new Promise(r => setTimeout(r, DELAY))
   }
 
-  console.log("✅ DONE. Results saved in", OUTPUT)
+  console.log("✅ DONE")
+  console.log("📂 Saved to results.json")
   process.exit()
-}
-
-run()})()
+})
