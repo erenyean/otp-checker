@@ -1,0 +1,14 @@
+{
+  "name": "otp-checker",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Termux WhatsApp 1-hour issue checker",
+  "main": "check.js",
+  "scripts": {
+    "start": "node check.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.8",
+    "pino": "^8.15.0"
+  }
+}
